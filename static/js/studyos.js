@@ -1,0 +1,262 @@
+const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+const state={page:'dashboard',subjectFilter:'All',plannerRange:'Today',taskTab:'All',revisionTab:'Upcoming',calendarMode:'Week',calendarOffset:0};
+async function api(url,opts={}){const r=await fetch(url,{headers:{'Content-Type':'application/json',...(opts.headers||{})},...opts});const d=await r.json();if(!r.ok)throw Error(d.error||'Request failed');return d}
+function esc(x=''){return String(x).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
+function toast(msg){const t=$('#toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2400)}
+function dt(x){return new Date(x)} function fmtTime(x){return dt(x).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})} function fmtDate(x,opt={weekday:'short',month:'short',day:'numeric'}){return dt(x+'T00:00:00').toLocaleDateString([],opt)}
+function minutes(a,b){return Math.max(0,Math.round((dt(b)-dt(a))/60000))}
+function shell(title,sub,eyebrow='STUDYOS'){ $('#eyebrow').textContent=eyebrow;$('#pageTitle').textContent=title;$('#pageSub').textContent=sub }
+function stat(label,value,foot,extra=''){return `<div class="stat"><div class="stat-label">${label}</div><div class="stat-value">${value}</div>${extra}<div class="stat-foot">${foot}</div></div>`}
+function empty(text){return `<div class="empty">${text}</div>`}
+function subjectProgress(ts){const done=ts.filter(t=>t.status==='Completed').length;return {done,total:ts.length,pct:ts.length?Math.round(done/ts.length*100):0}}
+
+async function renderDashboard(){
+ shell('Good evening','Here’s what needs your attention today.','DASHBOARD');
+ const [d,tasks,exams]=await Promise.all([api('/api/dashboard'),api('/api/tasks'),api('/api/exams')]);
+ const study=d.sessions.filter(s=>s.status!=='Skipped'); const hours=(study.reduce((a,s)=>a+minutes(s.start,s.end),0)/60).toFixed(1);
+ const next=d.next; const upcomingExams=exams.filter(e=>dt(e.starts_at)>=new Date()).slice(0,3);
+ $('#content').innerHTML=`
+ <div class="grid stats">${stat('Study time today',hours+'h','planned sessions')}${stat('Tasks remaining',d.tasks,'keep your queue clean')}${stat('Upcoming exams',d.exams,'next 30 days')}${stat('Topic progress',d.progress+'%',`${d.completed_topics}/${d.total_topics} completed` ,`<div class="progress"><i style="width:${d.progress}%"></i></div>`)}</div>
+ <div class="grid layout2" style="margin-top:14px">
+  <div class="panel"><div class="panel-head"><div><h2>Next up</h2><div class="panel-sub">Your automatically generated priority</div></div><button class="ghost" id="openPlanner">View full plan →</button></div>
+  ${next?`<div class="next"><div><div class="title">${esc(next.title.replace(/^Study · /,''))}</div><div class="chips"><span class="chip">${fmtTime(next.start)} – ${fmtTime(next.end)}</span><span class="chip good">Prerequisites complete</span><span class="chip">${minutes(next.start,next.end)} min</span></div></div><button class="primary" id="startNext">Start session →</button></div>`:empty('No plan yet. Generate your first week and StudyOS will fill realistic study windows automatically.')}
+  </div>
+  <div class="panel"><div class="panel-head"><div><h2>Why this plan?</h2><div class="panel-sub">Planning engine inputs</div></div></div><div class="chips"><span class="chip good">✓ Prerequisites</span><span class="chip">Deadlines</span><span class="chip">Exams</span><span class="chip">Availability</span><span class="chip">Conflicts</span><span class="chip">Revision</span></div><div class="why"><b>StudyOS prioritizes what is unlocked and urgent, then places it only inside realistic free time.</b></div></div>
+ </div>
+ <div class="panel" style="margin-top:14px"><div class="panel-head"><div><h2>Today’s Plan</h2><div class="panel-sub">Your generated schedule for today</div></div><button class="ghost" id="viewCalendar">Open calendar →</button></div><div class="timeline">${d.sessions.length?d.sessions.map(s=>`<div class="plan-row"><div class="time">${fmtTime(s.start)}</div><div><span class="dot"></span><span class="row-title">${esc(s.title.replace(/^Study · /,''))}</span><div class="row-sub">${s.status==='Done'?'Completed':'Study session'}</div></div><div class="duration">${minutes(s.start,s.end)} min</div><button class="mini" onclick="markSession(${s.id},'${s.status==='Done'?'Planned':'Done'}')">${s.status==='Done'?'Undo':'Start'}</button></div>`).join(''):empty('Nothing scheduled today. Generate a plan to populate this timeline.')}</div></div>
+ <div class="grid layout2" style="margin-top:14px"><div class="panel"><div class="panel-head"><div><h2>Upcoming exams</h2><div class="panel-sub">Pressure signals used by the planner</div></div></div>${upcomingExams.length?upcomingExams.map(e=>{const days=Math.max(0,Math.ceil((dt(e.starts_at)-new Date())/86400000));return `<div class="task"><div class="subject-icon">▣</div><div><b>${esc(e.subject)}</b><div class="muted">${esc(e.title)} · ${days} days</div></div><span class="chip ${days<7?'bad':days<14?'warn':'good'}">In ${days} days</span><div class="task-actions"><button class="mini" onclick="editExamModal(${e.id})">Edit</button><button class="mini" onclick="deleteExam(${e.id})">Delete</button></div></div>`}).join(''):empty('No upcoming exams.')}</div><div class="panel"><div class="panel-head"><div><h2>Task queue</h2><div class="panel-sub">Deadlines that can raise subject priority</div></div></div>${tasks.filter(t=>t.status!=='Done').slice(0,4).map(t=>`<div class="task"><div class="checkbox"></div><div><b>${esc(t.title)}</b><div class="muted">${esc(t.subject||'No subject')} · ${t.due_at?fmtDate(t.due_at.slice(0,10),{month:'short',day:'numeric'}):'No deadline'}</div></div><span class="priority ${t.priority.toLowerCase()}">${t.priority}</span><div class="task-actions"><button class="mini" onclick="editTaskModal(${t.id})">Edit</button><button class="mini" onclick="deleteTask(${t.id})">Delete</button></div></div>`).join('')||empty('No open tasks.')}</div></div>`;
+ $('#openPlanner').onclick=()=>go('planner');$('#viewCalendar').onclick=()=>go('calendar');if($('#startNext'))$('#startNext').onclick=()=>next&&markSession(next.id,'Done');
+}
+
+async function renderSubjects(){
+ shell('Subjects & Topics','Build the academic map StudyOS uses to plan your work.','SUBJECTS');
+ const [subs,topics,pre]=await Promise.all([api('/api/subjects'),api('/api/topics'),api('/api/prerequisites')]);
+ const names=['All',...subs.map(s=>s.name)]; const filtered=state.subjectFilter==='All'?subs:subs.filter(s=>s.name===state.subjectFilter);
+ $('#content').innerHTML=`<div class="panel"><div class="panel-head"><div><h2>Subjects & Topics</h2><div class="panel-sub">Track progress and prerequisite-aware learning paths.</div></div><button class="primary" id="addSubject">+ Add subject</button></div><div class="filters">${names.map(n=>`<button class="filter ${n===state.subjectFilter?'active':''}" data-subfilter="${esc(n)}">${esc(n)}</button>`).join('')}</div><div class="grid subjects">${filtered.length?filtered.map((s,i)=>{const ts=topics.filter(t=>t.subject_id===s.id),p=subjectProgress(ts);return `<div class="subject ${i===0?'selected':''}"><div class="subject-top"><div class="subject-icon">✦</div><span class="muted">${p.done}/${p.total} completed</span></div><div class="subject-name">${esc(s.name)}</div><div class="muted">${p.total} topics · ${p.pct}% complete</div><div class="progress"><i style="width:${p.pct}%"></i></div><button class="mini" onclick="openSubject(${s.id})">View topics →</button></div>`}).join(''):empty('Create your first subject to start building your plan.')}</div></div>
+ <div class="grid layout2" style="margin-top:14px"><div class="panel"><div class="panel-head"><div><h2>Topic map</h2><div class="panel-sub">Prerequisites determine what is unlocked next.</div></div></div>${topics.length?window.renderTopicList(topics):empty("Add topics to your subjects.")}</div><div class="panel"><div class="panel-head"><div><h2>Prerequisite graph</h2><div class="panel-sub">Directed dependencies prevent invalid study order.</div></div></div><div class="graph" id="miniGraph"></div></div></div>`;
+ $$('.filter').forEach(b=>b.onclick=()=>{state.subjectFilter=b.dataset.subfilter;renderSubjects()});$('#addSubject').onclick=()=>modal('Add subject',`<label>Name</label><input id="mName" autofocus><label>Description</label><input id="mDesc"><div class="form-actions"><button class="ghost" onclick="closeModal()">Cancel</button><button class="primary" onclick="saveSubject()">Create</button></div>`);drawGraph($('#miniGraph'),topics,pre);
+}
+
+function drawGraph(el,topics,pre){if(!el)return;const nodes=topics.slice(0,12), byId=Object.fromEntries(nodes.map((t,i)=>[t.id,{t,i}]));const width=700,height=280;const positions=nodes.map((t,i)=>({x:70+(i%4)*165,y:55+Math.floor(i/4)*100}));const edges=pre.filter(p=>byId[p.topic_id]&&byId[p.prerequisite_id]);el.innerHTML=`<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Prerequisite graph"><defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#6d778d"></path></marker></defs>${edges.map(e=>{const a=positions[byId[e.prerequisite_id].i],b=positions[byId[e.topic_id].i];return `<path class="graph-arrow" d="M ${a.x+55} ${a.y} C ${(a.x+b.x)/2} ${a.y}, ${(a.x+b.x)/2} ${b.y}, ${b.x-55} ${b.y}"></path>`}).join('')}${nodes.map((n,i)=>`<g><circle class="graph-node ${n.status==='Completed'?'done':''}" cx="${positions[i].x}" cy="${positions[i].y}" r="55"></circle><text class="graph-label" x="${positions[i].x}" y="${positions[i].y-2}" text-anchor="middle">${esc(n.name).slice(0,16)}</text><text class="graph-label" x="${positions[i].x}" y="${positions[i].y+15}" text-anchor="middle" opacity=".6">${n.status==='Completed'?'Done':'Current'}</text></g>`).join('')}</svg>`}
+
+async function openSubject(id){const [subs,topics,pre]=await Promise.all([api('/api/subjects'),api('/api/topics'),api('/api/prerequisites')]);const s=subs.find(x=>x.id===id);const ts=topics.filter(t=>t.subject_id===id);const p=subjectProgress(ts);shell(s.name,'Topic progress and prerequisite-aware learning path.','SUBJECT');$('#content').innerHTML=`<div class="panel"><div class="panel-head"><div><div class="muted">Subjects / ${esc(s.name)}</div><h2 style="margin-top:6px">${esc(s.name)}</h2><div class="panel-sub">${esc(s.description||'No description yet.')}</div></div><button class="primary" onclick="addTopic(${id},'${esc(s.name)}')">+ Add topic</button></div><div class="grid stats">${stat('Topics',p.total,'in this subject')}${stat('Completed',p.done,`${p.pct}% complete`)}${stat('Remaining',p.total-p.done,'still to learn')}${stat('Estimated time',ts.reduce((a,t)=>a+t.minutes,0)+'m','total topic effort')}</div></div><div class="grid layout2" style="margin-top:14px"><div class="panel"><div class="panel-head"><div><h2>Topics</h2><div class="panel-sub">Mark topics complete to unlock dependents.</div></div></div>${window.renderTopicList(ts)||empty("No topics yet.")}</div><div class="panel"><div class="panel-head"><div><h2>Prerequisite graph</h2><div class="panel-sub">A dependency-aware roadmap for this subject.</div></div></div><div class="graph" id="subjectGraph"></div></div></div>`;drawGraph($('#subjectGraph'),ts,pre)}
+async function openTopic(id){const [topics,pre]=await Promise.all([api('/api/topics'),api('/api/prerequisites')]);const t=topics.find(x=>x.id===id);const incoming=pre.filter(x=>x.topic_id===id);const outgoing=pre.filter(x=>x.prerequisite_id===id);shell(t.name,`${t.subject} · ${t.minutes} minutes estimated`,'TOPIC DETAILS');$('#content').innerHTML=`<div class="panel"><div class="panel-head"><div><div class="muted">Subjects / ${esc(t.subject)} / ${esc(t.name)}</div><h2 style="margin-top:7px">${esc(t.name)}</h2></div><button class="primary" onclick="toggleTopic(${t.id},'${t.status}')">${t.status==='Completed'?'Reopen':'✓ Mark complete'}</button></div><div class="tabs"><button class="tab active" data-topic-tab="overview">Overview</button><button class="tab" data-topic-tab="prereq">Prerequisites</button><button class="tab" data-topic-tab="notes">Notes</button></div><div class="grid layout2"><div class="panel"><h3>Prerequisite roadmap</h3><div class="graph" id="topicGraph"></div></div><div class="panel"><h3>Details</h3><div class="chips"><span class="chip">${t.minutes} min</span><span class="chip ${t.status==='Completed'?'good':''}">${t.status}</span><span class="chip">${incoming.length} prerequisites</span></div><div class="why"><b>What happens next?</b><br>${outgoing.length?`Completing this topic can unlock ${outgoing.length} dependent topic(s).`:'This topic has no dependent topics yet.'}</div></div></div></div>`;drawGraph($('#topicGraph'),topics,pre);$$('[data-topic-tab]').forEach(b=>b.onclick=()=>{$$('[data-topic-tab]').forEach(x=>x.classList.remove('active'));b.classList.add('active');toast(b.textContent+' view selected')})}
+
+async function renderPlanner(){shell('Study Planner','StudyOS generates your study plan automatically from your academic state.','STUDY PLANNER');const d=await api('/api/plan?days=14');let sessions=d.sessions;const today=new Date().toISOString().slice(0,10);if(state.plannerRange==='Today')sessions=sessions.filter(s=>s.starts_at.slice(0,10)===today);else if(state.plannerRange==='This Week')sessions=sessions.slice(0,7);else if(state.plannerRange==='This Month')sessions=sessions.slice(0,30);$('#content').innerHTML=`<div class="planner-hero"><div><h2>Your plan is generated for you.</h2><p>Prerequisites + exam pressure + deadlines + availability + conflicts.</p></div><button class="primary" id="generate">✦ Generate & save plan</button></div><div class="planner-switch">${['Today','This Week','This Month','Custom'].map(x=>`<button class="filter ${state.plannerRange===x?'active':''}" data-range="${x}">${x}</button>`).join('')}</div><div class="grid stats">${stat('Eligible topics',Math.max(0,d.remaining.length?d.remaining.length:0),'still outside the saved plan')}${stat('Available time',Math.floor(d.meta.available_minutes/60)+'h',`next ${Math.min(14,7)} days`) }${stat('Generated sessions',d.sessions.length,'recommended blocks')}${stat('Fit check',d.meta.overloaded?'Tight':'Good',d.remaining.length?'some work remains':'work fits',`<span class="chip ${d.meta.overloaded?'bad':'good'}">${d.meta.overloaded?'Capacity warning':'Capacity healthy'}</span>`)}</div><div class="grid layout2" style="margin-top:14px"><div class="panel"><div class="panel-head"><div><h2>${state.plannerRange} plan</h2><div class="panel-sub">Timeline with real start actions</div></div><span class="chip good">Auto-generated</span></div><div class="plan-list">${sessions.length?groupPlan(sessions):empty('No sessions in this view. Generate the plan or add availability.')}</div></div><div class="panel"><div class="panel-head"><div><h2>Why this plan?</h2><div class="panel-sub">Transparent planning logic</div></div></div>${d.meta.reasons.map(x=>`<div class="chips"><span class="chip good">✓</span><span>${esc(x)}</span></div>`).join('')}${d.meta.proof?`<div class="why"><b>Capacity check</b><br>${esc(d.meta.proof)}</div>`:''}${d.remaining.length?`<div class="why"><b>Still to fit</b><br>${d.remaining.map(x=>esc(x.name)).join(', ')}</div>`:''}</div></div>`;$$('[data-range]').forEach(b=>b.onclick=()=>{state.plannerRange=b.dataset.range;renderPlanner()});$('#generate').onclick=generatePlan}
+function groupPlan(sessions){const g={};sessions.forEach(s=>(g[s.starts_at.slice(0,10)]??=[]).push(s));return Object.entries(g).map(([day,arr])=>`<div class="section-title">${fmtDate(day)}</div>${arr.map(s=>`<div class="plan-row"><div class="time">${fmtTime(s.starts_at)}</div><div><span class="dot"></span><span class="row-title">${esc(s.title)}</span><div class="row-sub">${esc(s.subject)} · ${s.reason||'Recommended'}</div></div><div class="duration">${s.minutes} min</div><button class="mini" onclick="saveOrStart(${s.id||0})">${s.id?'Start':'Open'}</button></div>`).join('')}`).join('')}
+async function generatePlan(){try{const d=await api('/api/plan/generate',{method:'POST',body:JSON.stringify({days:7})});toast(`${d.created} sessions added to your calendar`);renderPlanner()}catch(e){toast(e.message)}}
+async function saveOrStart(id){if(id){await markSession(id,'Done')}else toast('Generate the plan to save these sessions.')}
+
+async function renderTasks(){shell('Tasks & Exams','Keep coursework and exam pressure in one place.','TASKS & EXAMS');const [tasks,exams,subs]=await Promise.all([api('/api/tasks'),api('/api/exams'),api('/api/subjects')]);let body=state.taskTab==='Exams'?exams.map(e=>{const days=Math.max(0,Math.ceil((dt(e.starts_at)-new Date())/86400000));return `<div class="task"><div class="subject-icon">▣</div><div><b>${esc(e.title)}</b><div class="muted">${esc(e.subject)} · ${dt(e.starts_at).toLocaleString()}</div></div><span class="chip ${days<7?'bad':days<14?'warn':'good'}">In ${days} days</span><div class="task-actions"><button class="mini" onclick="editExamModal(${e.id})">Edit</button><button class="mini" onclick="deleteExam(${e.id})">Delete</button></div></div>`}).join(''):tasks.filter(t=>state.taskTab==='All'||state.taskTab==='Tasks').map(t=>`<div class="task"><button class="checkbox" onclick="toggleTask(${t.id},'${t.status}')"></button><div><b>${esc(t.title)}</b><div class="muted">${esc(t.subject||'No subject')} · ${t.due_at?dt(t.due_at).toLocaleString():'No deadline'}</div></div><span class="priority ${t.priority.toLowerCase()}">${t.priority}</span><div class="task-actions"><button class="mini" onclick="editTaskModal(${t.id})">Edit</button><button class="mini" onclick="deleteTask(${t.id})">Delete</button></div></div>`).join('');$('#content').innerHTML=`<div class="panel"><div class="panel-head"><div><h2>Tasks & Exams</h2><div class="panel-sub">Deadlines feed directly into planning priority.</div></div><div class="chips"><button class="primary" id="addTask">+ Add task</button><button class="ghost" id="addExam">+ Add exam</button></div></div><div class="tabs">${['All','Tasks','Exams'].map(x=>`<button class="tab ${state.taskTab===x?'active':''}" data-tasktab="${x}">${x}</button>`).join('')}</div><div class="task-list">${body||empty('Nothing here yet.')}</div></div><div class="panel" style="margin-top:14px"><div class="panel-head"><div><h2>Upcoming Exams</h2><div class="panel-sub">Exam dates raise subject urgency in the planner.</div></div></div>${exams.slice(0,5).map(e=>{const days=Math.max(0,Math.ceil((dt(e.starts_at)-new Date())/86400000));return `<div class="task"><div class="subject-icon">▣</div><div><b>${esc(e.subject)}</b><div class="muted">${esc(e.title)} · ${dt(e.starts_at).toLocaleDateString()}</div></div><span class="chip ${days<7?'bad':days<14?'warn':'good'}">In ${days} days</span><div class="task-actions"><button class="mini" onclick="editExamModal(${e.id})">Edit</button><button class="mini" onclick="deleteExam(${e.id})">Delete</button></div></div>`}).join('')||empty('No exams added.')}</div>`;$$('[data-tasktab]').forEach(b=>b.onclick=()=>{state.taskTab=b.dataset.tasktab;renderTasks()});$('#addTask').onclick=()=>taskModal(subs);$('#addExam').onclick=()=>examModal(subs)}
+
+function localDateKey(value){const d=value instanceof Date?value:dt(value);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`}
+function calendarDateTime(day,timeValue){return `${localDateKey(day)}T${String(timeValue).slice(0,8)}`}
+
+async function renderRoutine(){shell('Routine & Availability','Tell StudyOS when you are busy so automatic planning uses the time you actually have.','ROUTINE');const [routine,events]=await Promise.all([api('/api/routine'),api('/api/events')]);const days=['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];$('#content').innerHTML=`<div class="panel"><div class="panel-head"><div><h2>Routine & Availability</h2><div class="panel-sub">Fixed commitments are removed before the planner chooses study slots.</div></div><button class="primary" id="addRoutine">+ Add block</button></div><div class="tabs"><button class="tab active">Weekly Routine</button><button class="tab">Study Availability</button><button class="tab">Events</button></div><div class="routine-table">${routine.length?routine.map(r=>`<div class="routine-row"><b>${days[r.weekday]}</b><div><b>${esc(r.title)}</b><div class="muted">${esc(r.category)}</div></div><span>${r.starts_at.slice(0,5)} – ${r.ends_at.slice(0,5)}</span><span class="availability">Busy</span><div class="task-actions"><button class="mini" onclick="editRoutineModal(${r.id})">Edit</button><button class="mini" onclick="deleteRoutine(${r.id})">Delete</button></div></div>`).join(''):empty('No routine yet. Add your fixed commitments and the planner will work around them.')}</div></div><div class="grid layout2" style="margin-top:14px"><div class="panel"><div class="panel-head"><div><h2>Study availability</h2><div class="panel-sub">Planner operates around your busy routine blocks across 24 hours.</div></div></div>${days.map(d=>{const busy=routine.filter(r=>r.weekday===days.indexOf(d));return `<div class="routine-row"><b>${d}</b><div class="muted">${busy.length?busy.map(x=>x.starts_at.slice(0,5)+'–'+x.ends_at.slice(0,5)).join(', '):'No fixed blocks'}</div><span class="availability">${busy.length?'Partly available':'Open'}</span><span></span></div>`}).join('')}</div><div class="panel"><div class="panel-head"><div><h2>Upcoming events</h2><div class="panel-sub">One-off commitments block study time too.</div></div><button class="ghost" id="addEvent">+ Add event</button></div>${events.length?events.slice(0,8).map(e=>`<div class="task"><div class="subject-icon">•</div><div><b>${esc(e.title)}</b><div class="muted">${dt(e.starts_at).toLocaleString()} · ${esc(e.category)}</div><div class="task-actions"><button class="mini" onclick="editEventModal(${e.id})">Edit</button><button class="mini" onclick="deleteEvent(${e.id})">Delete</button></div></div></div>`).join(''):empty('No upcoming events.')}</div></div><div class="panel" style="margin-top:14px"><div class="why"><b>Planner rule:</b> Set difference removes routine ∪ events ∪ existing study sessions from the 07:00–23:00 study window. The remaining intervals are the only places the automatic planner can schedule new work.</div></div>`;$('#addRoutine').onclick=()=>routineModal();$('#addEvent').onclick=()=>eventModal()}
+
+async function renderRevision(){shell('Revision Rotation','Automatically spaced reviews generated from your completed topics.','REVISION');const [topics]=await Promise.all([api('/api/topics')]);const completed=topics.filter(t=>t.status==='Completed').map(t=>({id:t.id,name:t.name,subject:t.subject}));let data=[];try{data=await api('/api/revision/preview',{method:'POST',body:JSON.stringify({method:'fibonacci',days:60})})}catch(e){}let filtered=state.revisionTab==='Upcoming'?data:data.slice().reverse();$('#content').innerHTML=`<div class="panel"><div class="panel-head"><div><h2>Revision Rotation</h2><div class="panel-sub">Spaced repetition using recurrence-based review intervals.</div></div><button class="primary" id="addToPlanner">+ Add to planner</button></div><div class="tabs">${['Upcoming','History','Settings'].map(x=>`<button class="tab ${state.revisionTab===x?'active':''}" data-revtab="${x}">${x}</button>`).join('')}</div>${state.revisionTab==='Settings'?`<div class="grid layout2"><div class="panel"><h3>Interval model</h3><div class="chips"><span class="chip good">Fibonacci</span><span class="chip">Exponential</span><span class="chip">Prime</span></div><div class="why">Fibonacci spacing is used for the current preview: 1, 1, 2, 3, 5 days. The same recurrence logic can be switched later.</div></div><div class="panel"><h3>Completed topics</h3><div class="muted">${completed.length} completed topics currently feed the rotation.</div></div></div>`:`<div class="grid review-grid">${filtered.slice(0,15).map(x=>`<div class="review"><div class="review-date">${fmtDate(x.date)}</div><div class="review-title">${esc(x.topic_name)}</div><div class="muted">${esc(x.topic_subject)}</div><div class="chips"><span class="chip">+${x.day_gap} day</span><span class="chip good">30 min</span></div></div>`).join('')||empty(completed.length?'No review slots in this window.':'Complete some topics first and the revision engine will generate reviews.')}</div>`}</div>`;$$('[data-revtab]').forEach(b=>b.onclick=()=>{state.revisionTab=b.dataset.revtab;renderRevision()});$('#addToPlanner').onclick=()=>go('planner')}
+
+async function renderAnalytics(){shell('Analytics','Track your progress, study time and subject-wise completion.','ANALYTICS');const [d,topics,sessions]=await Promise.all([api('/api/dashboard'),api('/api/topics'),api('/api/sessions')]);const subs=[...new Set(topics.map(t=>t.subject))];const bySubject=subs.map(s=>{const ts=topics.filter(t=>t.subject===s);return {s,p:subjectProgress(ts).pct}});const last7=Array.from({length:7},(_,i)=>{const day=new Date();day.setDate(day.getDate()-(6-i));const key=day.toISOString().slice(0,10);return {label:day.toLocaleDateString([], {weekday:'short'}),mins:sessions.filter(x=>x.starts_at.slice(0,10)===key).reduce((a,x)=>a+minutes(x.starts_at,x.ends_at),0)}});const max=Math.max(60,...last7.map(x=>x.mins));$('#content').innerHTML=`<div class="grid stats">${stat('Total study time',Math.round(sessions.reduce((a,x)=>a+minutes(x.starts_at,x.ends_at),0)/60*10)/10+'h','planned + completed')}${stat('Weekly goal',d.progress+'%','overall topic progress')}${stat('Topics completed',d.completed_topics,`of ${d.total_topics}`)}${stat('Open tasks',d.tasks,'remaining work')}</div><div class="grid analytics-grid" style="margin-top:14px"><div class="panel"><div class="panel-head"><div><h2>Study time</h2><div class="panel-sub">Last 7 days</div></div><span class="chip">Hours</span></div><div class="bar-chart">${last7.map(x=>`<div class="bar-wrap"><div style="height:${Math.max(4,x.mins/max*100)}%;width:100%;display:flex;align-items:flex-end"><div class="bar" style="height:100%" title="${x.mins} min"></div></div><div class="bar-label">${x.label}</div></div>`).join('')}</div></div><div class="panel"><div class="panel-head"><div><h2>Subject progress</h2><div class="panel-sub">Completion by subject</div></div></div><div class="subject-progress">${bySubject.map(x=>`<div class="sp-row"><span>${esc(x.s)}</span><div class="sp-track"><i style="width:${x.p}%"></i></div><b>${x.p}%</b></div>`).join('')||empty('Add subjects and topics to see progress.')}</div></div></div><div class="panel" style="margin-top:14px"><div class="panel-head"><div><h2>Planning health</h2><div class="panel-sub">Discrete Mathematics is embedded in the planner.</div></div></div><div class="chips"><span class="chip">Sets</span><span class="chip">Relations</span><span class="chip">Directed graphs</span><span class="chip">Topological order</span><span class="chip">Graph coloring</span><span class="chip">Recurrence</span><span class="chip">Workload constraints</span></div></div>`}
+async function renderSettings(){shell('Settings','Local StudyOS configuration.','SETTINGS');$('#content').innerHTML=`<div class="panel"><h2>How StudyOS works</h2><div class="why"><b>Local-first.</b> Flask runs on your machine and MySQL stores your planner data. There is no external cloud API involved in this app.</div><div class="why"><b>Automatic planner.</b> Generate a 7-day plan from subjects, prerequisites, exams, deadlines, routine blocks, events and existing sessions.</div><div class="why"><b>Student control.</b> StudyOS proposes the schedule; you can still mark sessions done, add tasks and change your academic inputs.</div></div>`}
+
+async function go(page){state.page=page;$$('.nav').forEach(b=>b.classList.toggle('active',b.dataset.page===page));try{if(page==='dashboard')await renderDashboard();else if(page==='subjects')await renderSubjects();else if(page==='planner')await renderPlanner();else if(page==='tasks')await renderTasks();else if(page==='calendar')await renderCalendar();else if(page==='routine')await renderRoutine();else if(page==='revision')await renderRevision();else if(page==='analytics')await renderAnalytics();else await renderSettings()}catch(e){$('#content').innerHTML=empty(`Could not load StudyOS: ${esc(e.message)}<br><small>Make sure MySQL is running and .env is configured.</small>`)}}
+async function markSession(id,status){await api('/api/sessions/'+id,{method:'PATCH',body:JSON.stringify({status})});toast(status==='Done'?'Session completed':'Session reopened');go(state.page)}
+async function toggleTask(id,status){await api('/api/tasks/'+id,{method:'PATCH',body:JSON.stringify({status:status==='Done'?'To do':'Done'})});go('tasks')}
+async function toggleTopic(id,status){await api('/api/topics/'+id,{method:'PATCH',body:JSON.stringify({status:status==='Completed'?'In progress':'Completed'})});toast(status==='Completed'?'Topic reopened':'Topic completed');go('subjects')}
+function modal(title,body){closeModal();const m=document.createElement('div');m.className='modal open';m.id='modal';m.innerHTML=`<div class="modal-box"><h2>${title}</h2>${body}</div>`;document.body.appendChild(m)}function closeModal(){$('#modal')?.remove()}
+async function saveSubject(){try{await api('/api/subjects',{method:'POST',body:JSON.stringify({name:$('#mName').value,description:$('#mDesc').value})});closeModal();toast('Subject created');go('subjects')}catch(e){toast(e.message)}}
+function addTopic(id,name, parent_id=null){ window._currentParentTopic = parent_id; modal('Add topic',`<div class="muted">${name}</div><label>Topic name</label><input id="mTopic"><label>Estimated minutes</label><input id="mMinutes" type="number" value="45" min="5"><div class="form-actions"><button class="ghost" onclick="closeModal()">Cancel</button><button class="primary" onclick="saveTopic(${id})">Create topic</button></div>`)}
+async function saveTopic(id){try{await api('/api/topics',{method:'POST',body:JSON.stringify({subject_id:id,name:$('#mTopic').value,minutes:+$('#mMinutes').value, parent_topic_id: window._currentParentTopic})});closeModal();toast('Topic added');go('subjects')}catch(e){toast(e.message)}}
+function taskModal(subs){modal('Add task',`<label>Title</label><input id="mTitle"><label>Subject</label><select id="mSubject"><option value="">No subject</option>${subs.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select><label>Due date <small>(YYYY-MM-DD)</small></label><input id="mDueDate" type="text" inputmode="numeric" placeholder="2026-10-05"><label>Due time <small>(HH:MM)</small></label><input id="mDueTime" type="text" inputmode="numeric" placeholder="18:30"><label>Priority</label><select id="mPriority"><option>Medium</option><option>High</option><option>Low</option></select><div class="form-actions"><button class="ghost" onclick="closeModal()">Cancel</button><button class="primary" onclick="saveTask()">Create task</button></div>`)}
+function normalizeDate(value){const v=value.trim();if(/^\d{4}-\d{2}-\d{2}$/.test(v))return v;if(/^\d{2}-\d{2}-\d{4}$/.test(v)){const [day,month,year]=v.split('-');return `${year}-${month}-${day}`}return ''}
+function normalizeTime(value){const v=value.trim();return /^\d{2}:\d{2}$/.test(v)?v:''}
+function dateTimeValue(dateId,timeId,required=true){const rawDate=$('#'+dateId).value,rawTime=$('#'+timeId).value;if(!rawDate&&!rawTime&&!required)return '';const date=normalizeDate(rawDate),time=normalizeTime(rawTime);if(!date||!time){toast('Use date YYYY-MM-DD and time HH:MM');return ''}return `${date}T${time}`}
+async function saveTask(){const due_at=dateTimeValue('mDueDate','mDueTime');if(!$('#mTitle').value.trim()){toast('Enter a task title');return}try{await api('/api/tasks',{method:'POST',body:JSON.stringify({title:$('#mTitle').value,subject_id:$('#mSubject').value||null,due_at,priority:$('#mPriority').value})});closeModal();toast('Task added');go('tasks')}catch(e){toast(e.message)}}
+function examModal(subs){modal('Add exam',`<label>Exam</label><input id="mTitle"><label>Subject</label><select id="mSubject">${subs.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select><label>Exam date <small>(YYYY-MM-DD)</small></label><input id="mExamDate" type="text" inputmode="numeric" placeholder="2026-10-10" required><label>Exam time <small>(HH:MM)</small></label><input id="mExamTime" type="text" inputmode="numeric" placeholder="09:00" required><div class="form-actions"><button class="ghost" onclick="closeModal()">Cancel</button><button class="primary" onclick="saveExam()">Create exam</button></div>`)}
+async function saveExam(){const starts_at=dateTimeValue('mExamDate','mExamTime');if(!$('#mTitle').value.trim()||!starts_at){toast('Enter an exam title, date, and time');return}try{await api('/api/exams',{method:'POST',body:JSON.stringify({title:$('#mTitle').value,subject_id:$('#mSubject').value,starts_at})});closeModal();toast('Exam added');go('tasks')}catch(e){toast(e.message)}}
+function routineModal(){modal('Add recurring routine block',`<div class="muted">This repeats every week. Use date YYYY-MM-DD and time HH:MM. For a one-time date, use Add event.</div><label>Weekday</label><select id="mDay">${['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'].map((x,i)=>`<option value="${i}">${x}</option>`).join('')}</select><label>Title</label><input id="mTitle" placeholder="College" required><label>Category</label><select id="mCategory"><option>College</option><option>Sleep</option><option>Meal</option><option>Break</option><option>Tuition</option><option>Exercise</option><option>Personal</option><option>Other</option></select><label>Start time <small>(HH:MM)</small></label><input id="mStart" type="text" inputmode="numeric" placeholder="09:00" required><label>End time <small>(HH:MM)</small></label><input id="mEnd" type="text" inputmode="numeric" placeholder="10:00" required><div class="form-actions"><button class="ghost" onclick="closeModal()">Cancel</button><button class="primary" onclick="saveRoutine()">Save block</button></div>`)}
+async function saveRoutine(){const title=$('#mTitle').value.trim(),start=normalizeTime($('#mStart').value),end=normalizeTime($('#mEnd').value);if(!title||!start||!end){toast('Use title and times in HH:MM format');return}if(end<=start){toast('End time must be after start time');return}try{await api('/api/routine',{method:'POST',body:JSON.stringify({weekday:+$('#mDay').value,title,category:$('#mCategory').value,starts_at:start,ends_at:end})});closeModal();toast('Routine saved');go('routine')}catch(e){toast(e.message)}}
+function eventModal(){modal('Add event',`<label>Title</label><input id="mTitle"><label>Category</label><select id="mCategory"><option>College</option><option>Tuition</option><option>Appointment</option><option>Exercise</option><option>Personal</option><option>Other</option></select><label>Start date <small>(YYYY-MM-DD)</small></label><input id="mStartDate" type="text" inputmode="numeric" placeholder="2026-10-06" required><label>Start time <small>(HH:MM)</small></label><input id="mStartTime" type="text" inputmode="numeric" placeholder="09:00" required><label>End date <small>(YYYY-MM-DD)</small></label><input id="mEndDate" type="text" inputmode="numeric" placeholder="2026-10-06" required><label>End time <small>(HH:MM)</small></label><input id="mEndTime" type="text" inputmode="numeric" placeholder="10:00" required><div class="form-actions"><button class="ghost" onclick="closeModal()">Cancel</button><button class="primary" onclick="saveEvent()">Save event</button></div>`)}
+async function saveEvent(){const starts_at=dateTimeValue('mStartDate','mStartTime'),ends_at=dateTimeValue('mEndDate','mEndTime');if(!$('#mTitle').value.trim()||!starts_at||!ends_at){toast('Enter a title, start date/time, and end date/time');return}if(ends_at<=starts_at){toast('Event end must be after its start');return}try{await api('/api/events',{method:'POST',body:JSON.stringify({title:$('#mTitle').value,category:$('#mCategory').value,starts_at,ends_at})});closeModal();toast('Event saved');go('routine')}catch(e){toast(e.message)}}
+$$('.nav').forEach(b=>b.onclick=()=>go(b.dataset.page));$('#refresh').onclick=()=>go(state.page);$('#quickPlan').onclick=()=>go('planner');go('dashboard');
+
+
+window.renderTopicList = (topics) => { 
+  const map = {}; 
+  topics.forEach(t => map[t.id] = {...t, children: []}); 
+  topics.forEach(t => { if(t.parent_topic_id && map[t.parent_topic_id]) map[t.parent_topic_id].children.push(map[t.id]); }); 
+  const roots = topics.filter(t => !t.parent_topic_id).map(t => map[t.id]); 
+  const render = (node, depth) => `<div class="task ${depth>0?'subtopic':''}"><div class="subject-icon">${node.status==='Completed'?'✓':'○'}</div><div style="flex:1"><b>${esc(node.name)}</b><div class="muted">${esc(node.subject)} · ${node.minutes} min · ${node.status}</div></div><div class="task-actions"><button class="mini" onclick="addTopic(${node.subject_id}, '${esc(node.subject)}', ${node.id})">+ Subtopic</button><button class="mini" onclick="openTopic(${node.id})">View</button><button class="mini" onclick="editTopicModal(${node.id})">Edit</button><button class="mini" onclick="deleteTopic(${node.id})">Delete</button></div></div>` + node.children.map(c => render(c, depth+1)).join(''); 
+  return roots.map(r => render(r, 0)).join(''); 
+};
+
+window.deleteTopic = async (id) => {
+    if(!confirm("Delete topic and subtopics?")) return;
+    await api('/api/topics/'+id, {method:'DELETE'});
+    go('subjects');
+};
+window.deleteTask = async (id) => { if(!confirm("Delete task?")) return; await api('/api/tasks/'+id, {method:'DELETE'}); go('tasks'); };
+window.deleteExam = async (id) => { if(!confirm("Delete exam?")) return; await api('/api/exams/'+id, {method:'DELETE'}); go('tasks'); };
+window.deleteEvent = async (id) => { if(!confirm("Delete event?")) return; await api('/api/events/'+id, {method:'DELETE'}); go('routine'); };
+window.deleteRoutine = async (id) => { if(!confirm("Delete routine?")) return; await api('/api/routine/'+id, {method:'DELETE'}); go('routine'); };
+window.deleteSession = async (id) => { if(!confirm("Delete session?")) return; await api('/api/sessions/'+id, {method:'DELETE'}); go('calendar'); };
+
+window.editTaskModal = async (id) => {
+    const [tasks, subs] = await Promise.all([api('/api/tasks'), api('/api/subjects')]);
+    const t = tasks.find(x => x.id === id);
+    if (!t) return;
+    const dt = t.due_at ? t.due_at.split('T') : ['',''];
+    modal('Edit task', `<label>Title</label><input id="mTitle" value="${esc(t.title)}"><label>Subject</label><select id="mSubject"><option value="">No subject</option>${subs.map(s=>`<option value="${s.id}" ${s.id===t.subject_id?'selected':''}>${esc(s.name)}</option>`).join('')}</select><label>Due date <small>(YYYY-MM-DD)</small></label><input id="mDueDate" type="text" inputmode="numeric" placeholder="2026-10-05" value="${dt[0].slice(0,10)}"><label>Due time <small>(HH:MM)</small></label><input id="mDueTime" type="text" inputmode="numeric" placeholder="18:30" value="${(dt[1]||'').slice(0,5)}"><label>Priority</label><select id="mPriority"><option ${t.priority==='Medium'?'selected':''}>Medium</option><option ${t.priority==='High'?'selected':''}>High</option><option ${t.priority==='Low'?'selected':''}>Low</option></select><div class="form-actions"><button class="ghost" onclick="closeModal()">Cancel</button><button class="primary" onclick="updateTask(${id})">Save changes</button></div>`);
+};
+
+window.updateTask = async (id) => {
+    const due_at = dateTimeValue('mDueDate','mDueTime',false);
+    if (!$('#mTitle').value.trim()) { toast('Enter a task title'); return; }
+    try {
+        await api('/api/tasks/full/'+id, {method:'PATCH', body:JSON.stringify({title:$('#mTitle').value, subject_id:$('#mSubject').value||null, due_at, priority:$('#mPriority').value})});
+        closeModal(); toast('Task updated'); go('tasks');
+    } catch(e) { toast(e.message); }
+};
+
+window.editExamModal = async (id) => {
+    const [exams, subs] = await Promise.all([api('/api/exams'), api('/api/subjects')]);
+    const e = exams.find(x => x.id === id);
+    if (!e) return;
+    const dt = e.starts_at.split('T');
+    modal('Edit exam', `<label>Exam</label><input id="mTitle" value="${esc(e.title)}"><label>Subject</label><select id="mSubject">${subs.map(s=>`<option value="${s.id}" ${s.id===e.subject_id?'selected':''}>${esc(s.name)}</option>`).join('')}</select><label>Exam date <small>(YYYY-MM-DD)</small></label><input id="mExamDate" type="text" inputmode="numeric" placeholder="2026-10-10" value="${dt[0].slice(0,10)}" required><label>Exam time <small>(HH:MM)</small></label><input id="mExamTime" type="text" inputmode="numeric" placeholder="09:00" value="${dt[1].slice(0,5)}" required><div class="form-actions"><button class="ghost" onclick="closeModal()">Cancel</button><button class="primary" onclick="updateExam(${id})">Save changes</button></div>`);
+};
+
+window.updateExam = async (id) => {
+    const starts_at = dateTimeValue('mExamDate','mExamTime');
+    if (!$('#mTitle').value.trim() || !starts_at) { toast('Enter title, date, and time'); return; }
+    try {
+        await api('/api/exams/'+id, {method:'PATCH', body:JSON.stringify({title:$('#mTitle').value, subject_id:$('#mSubject').value, starts_at})});
+        closeModal(); toast('Exam updated'); go('tasks');
+    } catch(err) { toast(err.message); }
+};
+
+window.editRoutineModal = async (id) => {
+    const [routine] = await Promise.all([api('/api/routine')]);
+    const r = routine.find(x => x.id === id);
+    if (!r) return;
+    modal('Edit routine block', `<label>Weekday</label><select id="mDay">${['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'].map((x,i)=>`<option value="${i}" ${r.weekday===i?'selected':''}>${x}</option>`).join('')}</select><label>Title</label><input id="mTitle" value="${esc(r.title)}" required><label>Category</label><select id="mCategory">${['College','Sleep','Meal','Break','Tuition','Exercise','Personal','Other'].map(c=>`<option ${r.category===c?'selected':''}>${c}</option>`).join('')}</select><label>Start time <small>(HH:MM)</small></label><input id="mStart" type="text" inputmode="numeric" value="${String(r.starts_at).slice(0,5)}" required><label>End time <small>(HH:MM)</small></label><input id="mEnd" type="text" inputmode="numeric" value="${String(r.ends_at).slice(0,5)}" required><div class="form-actions"><button class="ghost" onclick="closeModal()">Cancel</button><button class="primary" onclick="updateRoutine(${id})">Save changes</button></div>`);
+};
+
+window.updateRoutine = async (id) => {
+    const title=$('#mTitle').value.trim(), start=normalizeTime($('#mStart').value), end=normalizeTime($('#mEnd').value);
+    if (!title || !start || !end) { toast('Use title and times in HH:MM format'); return; }
+    try {
+        await api('/api/routine/'+id, {method:'PATCH', body:JSON.stringify({weekday:+$('#mDay').value, title, category:$('#mCategory').value, starts_at:start, ends_at:end})});
+        closeModal(); toast('Routine updated'); go('routine');
+    } catch(err) { toast(err.message); }
+};
+
+window.editEventModal = async (id) => {
+    const [events] = await Promise.all([api('/api/events')]);
+    const e = events.find(x => x.id === id);
+    if (!e) return;
+    const sd = e.starts_at.split('T'), ed = e.ends_at.split('T');
+    modal('Edit event', `<label>Title</label><input id="mTitle" value="${esc(e.title)}"><label>Category</label><select id="mCategory">${['College','Tuition','Appointment','Exercise','Personal','Other'].map(c=>`<option ${e.category===c?'selected':''}>${c}</option>`).join('')}</select><label>Start date <small>(YYYY-MM-DD)</small></label><input id="mStartDate" type="text" inputmode="numeric" value="${sd[0].slice(0,10)}" required><label>Start time <small>(HH:MM)</small></label><input id="mStartTime" type="text" inputmode="numeric" value="${sd[1].slice(0,5)}" required><label>End date <small>(YYYY-MM-DD)</small></label><input id="mEndDate" type="text" inputmode="numeric" value="${ed[0].slice(0,10)}" required><label>End time <small>(HH:MM)</small></label><input id="mEndTime" type="text" inputmode="numeric" value="${ed[1].slice(0,5)}" required><div class="form-actions"><button class="ghost" onclick="closeModal()">Cancel</button><button class="primary" onclick="updateEvent(${id})">Save changes</button></div>`);
+};
+
+window.updateEvent = async (id) => {
+    const starts_at = dateTimeValue('mStartDate','mStartTime'), ends_at = dateTimeValue('mEndDate','mEndTime');
+    if (!$('#mTitle').value.trim() || !starts_at || !ends_at) { toast('Enter title and times'); return; }
+    try {
+        await api('/api/events/'+id, {method:'PATCH', body:JSON.stringify({title:$('#mTitle').value, category:$('#mCategory').value, starts_at, ends_at})});
+        closeModal(); toast('Event updated'); go('routine');
+    } catch(err) { toast(err.message); }
+};
+
+window.editTopicModal = async (id) => {
+    const [topics] = await Promise.all([api('/api/topics')]);
+    const t = topics.find(x => x.id === id);
+    if (!t) return;
+    modal('Edit topic', `<label>Name</label><input id="mTitle" value="${esc(t.name)}"><label>Minutes</label><input id="mMinutes" type="number" value="${t.minutes}"><div class="form-actions"><button class="ghost" onclick="closeModal()">Cancel</button><button class="primary" onclick="updateTopic(${id})">Save changes</button></div>`);
+};
+
+window.updateTopic = async (id) => {
+    try {
+        await api('/api/topics/full/'+id, {method:'PATCH', body:JSON.stringify({name:$('#mTitle').value, minutes:+$('#mMinutes').value})});
+        closeModal(); toast('Topic updated'); go('subjects');
+    } catch(err) { toast(err.message); }
+};
+
+window.editSessionModal = async (id) => {
+    const [sessions] = await Promise.all([api('/api/sessions')]);
+    const s = sessions.find(x => x.id === id);
+    if (!s) return;
+    const sd = s.starts_at.split('T'), ed = s.ends_at.split('T');
+    modal('Edit study session', `<label>Title</label><input id="mTitle" value="${esc(s.title)}"><label>Start date <small>(YYYY-MM-DD)</small></label><input id="mStartDate" type="text" inputmode="numeric" value="${sd[0].slice(0,10)}" required><label>Start time <small>(HH:MM)</small></label><input id="mStartTime" type="text" inputmode="numeric" value="${sd[1].slice(0,5)}" required><label>End date <small>(YYYY-MM-DD)</small></label><input id="mEndDate" type="text" inputmode="numeric" value="${ed[0].slice(0,10)}" required><label>End time <small>(HH:MM)</small></label><input id="mEndTime" type="text" inputmode="numeric" value="${ed[1].slice(0,5)}" required><div class="form-actions"><button class="ghost" onclick="closeModal()">Cancel</button><button class="primary" onclick="updateSession(${id})">Save changes</button></div>`);
+};
+
+window.updateSession = async (id) => {
+    const starts_at = dateTimeValue('mStartDate','mStartTime'), ends_at = dateTimeValue('mEndDate','mEndTime');
+    if (!$('#mTitle').value.trim() || !starts_at || !ends_at) { toast('Enter title and times'); return; }
+    try {
+        await api('/api/sessions/full/'+id, {method:'PATCH', body:JSON.stringify({title:$('#mTitle').value, starts_at, ends_at})});
+        closeModal(); toast('Session updated'); go('calendar');
+    } catch(err) { toast(err.message); }
+};
+
+
+
+    shell('Weekly Schedule','Sessions, tasks, exams, events, and recurring routine blocks.','CALENDAR');
+async function renderCalendar() {
+    const [sessions,events,routine,tasks,exams]=await Promise.all([api('/api/sessions'),api('/api/events'),api('/api/routine'),api('/api/tasks'),api('/api/exams')]);
+    
+    const now=new Date();
+    const monday=new Date(now);
+    monday.setDate(now.getDate()-((now.getDay()+6)%7)+state.calendarOffset*7);
+    monday.setHours(0,0,0,0);
+    
+    const days=Array.from({length:7},(_,i)=>{
+        const d=new Date(monday);
+        d.setDate(monday.getDate()+i);
+        return d;
+    });
+    
+    const itemsForDay=(day, dayIndex)=>{
+        const ds=localDateKey(day), weekday=(day.getDay()+6)%7;
+        return [
+            ...sessions.filter(s=>localDateKey(s.starts_at)===ds).map(s=>({title:s.title,type:'study',start:s.starts_at,end:s.ends_at})),
+            ...events.filter(e=>localDateKey(e.starts_at)===ds).map(e=>({title:e.title,type:'event',start:e.starts_at,end:e.ends_at})),
+            ...tasks.filter(t=>t.due_at&&localDateKey(t.due_at)===ds).map(t=>({title:`Task: ${t.title}`,type:'task',start:t.due_at,end:t.due_at})),
+            ...exams.filter(e=>localDateKey(e.starts_at)===ds).map(e=>({title:`Exam: ${e.title}`,type:'exam',start:e.starts_at,end:e.starts_at})),
+            ...routine.filter(r=>r.weekday===weekday).map(r=>({title:r.title,type:'routine',start:calendarDateTime(day,r.starts_at),end:calendarDateTime(day,r.ends_at)}))
+        ].map(item => ({...item, dayIndex}));
+    };
+    
+    let allItems = [];
+    days.forEach((d, i) => {
+        allItems = allItems.concat(itemsForDay(d, i));
+    });
+    
+    const hours=Array.from({length:24},(_,i)=>i);
+    const cells=hours.map((h, r)=>`<div class="hour" style="grid-column:1;grid-row:${r+2}">${String(h).padStart(2,'0')}:00</div>${days.map((_, c)=>`<div style="grid-column:${c+2};grid-row:${r+2}"></div>`).join('')}`).join('');
+    
+    const eventBlocks = allItems.map(item => {
+        const s = dt(item.start);
+        const e = dt(item.end);
+        
+        let startHour = s.getHours();
+        let endHour = e.getHours() + (e.getMinutes() > 0 ? 1 : 0);
+        if (endHour <= startHour) endHour = startHour + 1; // min 1 hour span
+        
+        const span = endHour - startHour;
+        const colorClass = item.type==='event'||item.type==='exam'?'red':item.type==='task'?'blue':item.type==='routine'?'green':'';
+        
+        return `<div class="event ${colorClass}" style="grid-column: ${item.dayIndex + 2}; grid-row: ${startHour + 2} / span ${span}; margin: 2px 4px; z-index: 10;">
+            ${esc(item.title)}<br>
+            <small>${item.type==='task'?'Due '+fmtTime(item.start):`${fmtTime(item.start)}–${fmtTime(item.end)}`}</small>
+        </div>`;
+    }).join('');
+    
+    const agenda=allItems.filter(x=>x.type==='task'||x.type==='exam').map(x=>`<div class="task"><div class="subject-icon">${x.type==='exam'?'!':'✓'}</div><div><b>${esc(x.title)}</b><div class="muted">${dt(x.start).toLocaleString()}</div></div></div>`).join('');
+    
+    $('#content').innerHTML=`<div class="panel"><div class="calendar-controls"><div><h2>Weekly Schedule</h2><div class="panel-sub">All saved study work and commitments.</div></div><div class="chips"><div class="calendar-nav"><button class="ghost" id="prevWeek">←</button><button class="ghost" id="todayWeek">Today</button><button class="ghost" id="nextWeek">→</button></div><div class="toggle"><button class="active">Week</button><button disabled>Day</button></div></div></div><div class="weekgrid"><div class="dayhead">Time</div>${days.map(d=>`<div class="dayhead">${d.toLocaleDateString([], {weekday:'short'})}<small>${d.getDate()} ${d.toLocaleDateString([], {month:'short'})}</small></div>`).join('')}${cells}${eventBlocks}</div></div>${agenda?`<div class="panel" style="margin-top:14px"><div class="panel-head"><div><h2>Deadlines this week</h2><div class="panel-sub">Tasks and exams are shown here even when they do not have a study time.</div></div></div>${agenda}</div>`:''}`;
+    
+    $('#prevWeek').onclick=()=>{state.calendarOffset--;renderCalendar()};
+    $('#nextWeek').onclick=()=>{state.calendarOffset++;renderCalendar()};
+    $('#todayWeek').onclick=()=>{state.calendarOffset=0;renderCalendar()};
+}

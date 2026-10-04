@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#090b12">
+  <title>StudyOS — Student Command Center</title>
+  <link rel="stylesheet" href="/static/css/studyos.css?v=2">
+</head>
+<body>
+<div class="app" id="app">
+  <aside class="sidebar">
+    <div class="brand"><span class="brand-mark">✦</span><div><strong>StudyOS</strong><small>Student command center</small></div></div>
+    <nav id="nav">
+      <button class="nav active" data-page="dashboard"><span>⌂</span> Dashboard</button>
+      <button class="nav" data-page="subjects"><span>◈</span> Subjects</button>
+      <button class="nav" data-page="planner"><span>✦</span> Study Planner</button>
+      <button class="nav" data-page="tasks"><span>✓</span> Tasks &amp; Exams</button>
+      <button class="nav" data-page="calendar"><span>▦</span> Calendar</button>
+      <button class="nav" data-page="routine"><span>◷</span> Routine</button>
+      <button class="nav" data-page="revision"><span>↻</span> Revision</button>
+      <button class="nav" data-page="analytics"><span>◒</span> Analytics</button>
+    </nav>
+    <div class="sidebar-bottom">
+      <button class="nav" data-page="settings"><span>⚙</span> Settings</button>
+      <div class="profile"><div class="avatar">S</div><div><b>Student</b><small>Local workspace</small></div></div>
+    </div>
+  </aside>
+  <main class="main">
+    <header class="topbar">
+      <div><div class="eyebrow" id="eyebrow">DASHBOARD</div><h1 id="pageTitle">Good evening</h1><p id="pageSub">Here’s what needs your attention today.</p></div>
+      <div class="top-actions"><button class="ghost" id="refresh">↻ Refresh</button><button class="primary" id="quickPlan">✦ Generate plan</button></div>
+    </header>
+    <section id="content"></section>
+  </main>
+</div>
+<div class="toast" id="toast" aria-live="polite"></div>
+<script src="/static/js/studyos.js?v=3"></script>
+</body>
+</html>
