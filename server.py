@@ -12,6 +12,10 @@ from dm_logic.auto_schedule import get_free_time_slots
 
 app = Flask(__name__)
 
+ROUTINE_CATEGORIES = {'Sleep','Meal','Snack','Break','College','Tuition','Exercise','Nap','Personal','Other'}
+EVENT_CATEGORIES = {'College','Tuition','Commute','Going out','Appointment','Exercise','Personal','Other'}
+SESSION_STATUSES = {'Planned','Done','Skipped'}
+
 
 
 def iso(v):
@@ -106,6 +110,15 @@ def build_plan(days=7, start_date=None):
         
         day_start = datetime.combine(day, time(7, 0))
         day_end = datetime.combine(day, time(23, 0))
+        # Never create study sessions in the past when generating today's plan.
+        if day == date.today():
+            now = datetime.now()
+            if now >= day_end:
+                continue
+            if now > day_start:
+                minute = ((now.minute + 4) // 5) * 5
+                rounded_now = now.replace(second=0, microsecond=0) + timedelta(minutes=(minute - now.minute))
+                day_start = max(day_start, rounded_now)
         
         events = fetch_all("SELECT starts_at,ends_at FROM events WHERE starts_at <= %s AND ends_at >= %s", (day_end, day_start))
         
@@ -173,13 +186,13 @@ def build_plan(days=7, start_date=None):
     overloaded, proof = check_workload(required, total_available)
     reasons.extend([
         f"{len(eligible_set)} topic(s) are currently eligible based on completed prerequisites.",
-        f"The planner searched {total_available} minutes of realistic study availability spanning 24h/day.",
+        f"The planner searched {total_available} minutes of realistic study availability inside the 07:00–23:00 study window.",
         "Topics are fragmented properly to pack into available gaps, ignoring rigid daily repeats.",
         "Upcoming exams and deadlines increase subject priority, and exams block free time.",
     ])
     if remaining:
         reasons.append(f"{len(remaining)} topic(s) could not fit; they remain unscheduled instead of being placed over commitments.")
-    return scheduled, remaining, {"overloaded": overloaded, "proof": proof, "reasons": reasons, "available_minutes": total_available}
+    return scheduled, remaining, {"overloaded": overloaded, "proof": proof, "reasons": reasons, "available_minutes": total_available, "eligible_topics": len(eligible_set)}
 
 
 @app.get("/")
@@ -309,7 +322,10 @@ def routine():
             return json_error("Weekday must be between 0 and 6")
         if ends_at <= starts_at:
             return json_error("End time must be after start time")
-        rid=execute("INSERT INTO routine_blocks(weekday,title,category,starts_at,ends_at) VALUES(%s,%s,%s,%s,%s)",(weekday,title,d.get("category","Other"),starts_at,ends_at))
+        category = d.get("category","Other")
+        if category not in ROUTINE_CATEGORIES:
+            return json_error("Invalid routine category. Choose from: " + ", ".join(sorted(ROUTINE_CATEGORIES)))
+        rid=execute("INSERT INTO routine_blocks(weekday,title,category,starts_at,ends_at) VALUES(%s,%s,%s,%s,%s)",(weekday,title,category,starts_at,ends_at))
         return jsonify({"id":rid}),201
     rows=fetch_all("SELECT routine_id,weekday,title,category,starts_at,ends_at FROM routine_blocks WHERE enabled=1 ORDER BY weekday,starts_at")
     return jsonify(rows_dict(rows,["id","weekday","title","category","starts_at","ends_at"]))
@@ -318,7 +334,16 @@ def routine():
 @app.route("/api/events", methods=["GET","POST"])
 def events():
     if request.method=="POST":
-        d=request.json or {}; eid=execute("INSERT INTO events(title,category,starts_at,ends_at,location,notes) VALUES(%s,%s,%s,%s,%s,%s)",(d["title"],d.get("category","Other"),parse_dt(d["starts_at"]),parse_dt(d["ends_at"]),d.get("location",""),d.get("notes","")))
+        d=request.json or {}; title=(d.get("title") or "").strip()
+        if not title or not d.get("starts_at") or not d.get("ends_at"):
+            return json_error("Event title, start, and end are required")
+        starts=parse_dt(d["starts_at"]); ends=parse_dt(d["ends_at"])
+        if not starts or not ends or ends <= starts:
+            return json_error("Event end must be after its start")
+        category=d.get("category","Other")
+        if category not in EVENT_CATEGORIES:
+            return json_error("Invalid event category. Choose from: " + ", ".join(sorted(EVENT_CATEGORIES)))
+        eid=execute("INSERT INTO events(title,category,starts_at,ends_at,location,notes) VALUES(%s,%s,%s,%s,%s,%s)",(title,category,starts,ends,d.get("location",""),d.get("notes","")))
         return jsonify({"id":eid}),201
     rows=fetch_all("SELECT event_id,title,category,starts_at,ends_at,location FROM events WHERE ends_at >= %s ORDER BY starts_at LIMIT 200",(datetime.now(),))
     return jsonify(rows_dict(rows,["id","title","category","starts_at","ends_at","location"]))
@@ -327,7 +352,15 @@ def events():
 @app.route("/api/sessions", methods=["GET","POST"])
 def sessions():
     if request.method=="POST":
-        d=request.json or {}; sid=execute("INSERT INTO study_sessions(title,topic_id,task_id,starts_at,ends_at,status) VALUES(%s,%s,%s,%s,%s,%s)",(d["title"],d.get("topic_id"),d.get("task_id"),parse_dt(d["starts_at"]),parse_dt(d["ends_at"]),d.get("status","Planned")))
+        d=request.json or {}; title=(d.get("title") or "").strip()
+        starts=parse_dt(d.get("starts_at")); ends=parse_dt(d.get("ends_at")); status=d.get("status","Planned")
+        if not title or not starts or not ends:
+            return json_error("Session title, start, and end are required")
+        if ends <= starts:
+            return json_error("Session end must be after its start")
+        if status not in SESSION_STATUSES:
+            return json_error("Invalid session status")
+        sid=execute("INSERT INTO study_sessions(title,topic_id,task_id,starts_at,ends_at,status) VALUES(%s,%s,%s,%s,%s,%s)",(title,d.get("topic_id"),d.get("task_id"),starts,ends,status))
         return jsonify({"id":sid}),201
     rows=fetch_all("SELECT session_id,title,topic_id,task_id,starts_at,ends_at,status FROM study_sessions ORDER BY starts_at DESC LIMIT 300")
     return jsonify(rows_dict(rows,["id","title","topic_id","task_id","starts_at","ends_at","status"]))
@@ -469,21 +502,23 @@ def update_routine(rid):
     d = request.json or {}
     fields = []
     vals = []
+    if "category" in d and d["category"] not in ROUTINE_CATEGORIES:
+        return json_error("Invalid routine category. Choose from: " + ", ".join(sorted(ROUTINE_CATEGORIES)))
+    if "weekday" in d:
+        try: weekday=int(d["weekday"])
+        except (TypeError,ValueError): return json_error("Weekday must be between 0 and 6")
+        if weekday not in range(7): return json_error("Weekday must be between 0 and 6")
+    existing=fetch_all("SELECT starts_at,ends_at FROM routine_blocks WHERE routine_id=%s", (rid,))
+    if not existing: return json_error("Routine block not found",404)
+    start=d.get("starts_at",existing[0][0]); end=d.get("ends_at",existing[0][1])
+    if end <= start: return json_error("End time must be after start time")
     for key, col in [("title", "title"), ("category", "category")]:
         if key in d:
-            fields.append(f"{col}=%s")
-            vals.append(d[key])
-    if "weekday" in d:
-        fields.append("weekday=%s")
-        vals.append(int(d["weekday"]))
-    if "starts_at" in d:
-        fields.append("starts_at=%s")
-        vals.append(d["starts_at"])
-    if "ends_at" in d:
-        fields.append("ends_at=%s")
-        vals.append(d["ends_at"])
-    if not fields:
-        return json_error("Nothing to update")
+            fields.append(f"{col}=%s"); vals.append(d[key])
+    if "weekday" in d: fields.append("weekday=%s"); vals.append(weekday)
+    if "starts_at" in d: fields.append("starts_at=%s"); vals.append(start)
+    if "ends_at" in d: fields.append("ends_at=%s"); vals.append(end)
+    if not fields: return json_error("Nothing to update")
     vals.append(rid)
     execute(f"UPDATE routine_blocks SET {','.join(fields)} WHERE routine_id=%s", tuple(vals))
     return jsonify({"ok": True})
@@ -500,16 +535,20 @@ def update_event(eid):
     d = request.json or {}
     fields = []
     vals = []
+    if "category" in d and d["category"] not in EVENT_CATEGORIES:
+        return json_error("Invalid event category. Choose from: " + ", ".join(sorted(EVENT_CATEGORIES)))
     for key, col in [("title", "title"), ("category", "category"), ("location", "location"), ("notes", "notes")]:
         if key in d:
             fields.append(f"{col}=%s")
             vals.append(d[key])
-    if "starts_at" in d:
-        fields.append("starts_at=%s")
-        vals.append(parse_dt(d["starts_at"]))
-    if "ends_at" in d:
-        fields.append("ends_at=%s")
-        vals.append(parse_dt(d["ends_at"]))
+    if "starts_at" in d or "ends_at" in d:
+        existing=fetch_all("SELECT starts_at,ends_at FROM events WHERE event_id=%s", (eid,))
+        if not existing: return json_error("Event not found",404)
+        starts=parse_dt(d["starts_at"]) if "starts_at" in d else existing[0][0]
+        ends=parse_dt(d["ends_at"]) if "ends_at" in d else existing[0][1]
+        if not starts or not ends or ends <= starts: return json_error("Event end must be after its start")
+        if "starts_at" in d: fields.append("starts_at=%s"); vals.append(starts)
+        if "ends_at" in d: fields.append("ends_at=%s"); vals.append(ends)
     if not fields:
         return json_error("Nothing to update")
     vals.append(eid)
@@ -530,20 +569,27 @@ def update_session_full(sid):
     vals = []
     for key, col in [("title", "title"), ("topic_id", "topic_id"), ("task_id", "task_id"), ("status", "status")]:
         if key in d:
+            if key == "status" and d[key] not in SESSION_STATUSES:
+                return json_error("Invalid session status")
             fields.append(f"{col}=%s")
             vals.append(d[key] if d[key] != "" else None)
-    if "starts_at" in d:
-        fields.append("starts_at=%s")
-        vals.append(parse_dt(d["starts_at"]))
-    if "ends_at" in d:
-        fields.append("ends_at=%s")
-        vals.append(parse_dt(d["ends_at"]))
+    starts = parse_dt(d["starts_at"]) if "starts_at" in d else None
+    ends = parse_dt(d["ends_at"]) if "ends_at" in d else None
+    if "starts_at" in d or "ends_at" in d:
+        existing = fetch_all("SELECT starts_at,ends_at FROM study_sessions WHERE session_id=%s", (sid,))
+        if not existing:
+            return json_error("Study session not found", 404)
+        starts = starts or existing[0][0]
+        ends = ends or existing[0][1]
+        if not starts or not ends or ends <= starts:
+            return json_error("Session end must be after its start")
+        if "starts_at" in d: fields.append("starts_at=%s"); vals.append(starts)
+        if "ends_at" in d: fields.append("ends_at=%s"); vals.append(ends)
     if not fields:
         return json_error("Nothing to update")
     vals.append(sid)
     execute(f"UPDATE study_sessions SET {','.join(fields)} WHERE session_id=%s", tuple(vals))
     return jsonify({"ok": True})
-
 
 
 @app.route("/api/topics/full/<int:tid>", methods=["PATCH"])
